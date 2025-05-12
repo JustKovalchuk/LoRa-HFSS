@@ -7,11 +7,22 @@ const long SYNC_FREQ = 868200000;
 
 const uint32_t seed = 123456;
 
-unsigned long hopInterval = 10000;
+unsigned long hopInterval = 1000;
 unsigned long lastHopTime = 0;
 int hopIndex = -1;
 
-int isSyncronized = 0;
+unsigned long syncDelay = 50;
+
+bool IsNewHop(){
+  return millis() - lastHopTime > hopInterval;
+}
+
+void UpdateLastHopTime() {
+  unsigned long timeSinceSync = millis();
+  int hopsSinceSync = timeSinceSync/hopInterval;
+  int currentFreqIndex = hopsSinceSync / freqCount;
+  lastHopTime = hopsSinceSync*hopInterval;
+}
 
 int pseudoRandom(int index, uint32_t seed) {
   uint32_t lfsr = seed;
@@ -27,7 +38,7 @@ int pseudoRandom(int index, uint32_t seed) {
   return lfsr % freqCount; // повертаємо індекс із freqList
 }
 
-void SendSyncPacket() {
+void SendSyncPacket(long basicFreq) {
   LoRa.setFrequency(SYNC_FREQ);
   LoRa.beginPacket();
   LoRa.print("SYNC:");
@@ -35,23 +46,26 @@ void SendSyncPacket() {
   LoRa.endPacket();
   Serial.print("Sent SYNC with index ");
   Serial.println(hopIndex);
-
-  long currentFreq = freqList[hopIndex];
-  LoRa.setFrequency(freqList[hopIndex]);
+  
+  LoRa.setFrequency(basicFreq);
 }
 
-// Обираємо нову частоту для хопу
-long UpdateHopFreq(bool isRandom=true) {
-  hopIndex = (hopIndex + 1) % freqCount;
+long getCurrentFreq(int hopIndex, bool isRandom=true) {
   int freqIdx = hopIndex;
   if (isRandom) {
     freqIdx = pseudoRandom(hopIndex, seed);
   }
 
-  long currentFreq = freqList[freqIdx];
+  return freqList[freqIdx];
+}
+
+// Обираємо нову частоту для хопу
+long nextHop(bool isRandom=true) {
+  hopIndex = (hopIndex + 1) % freqCount;
+  long currentFreq = getCurrentFreq(hopIndex, isRandom);
   LoRa.setFrequency(currentFreq);
 
-  lastHopTime = millis();
+  UpdateLastHopTime();
 
   return currentFreq;
 }
@@ -61,7 +75,7 @@ void setup() {
   while (!Serial);
 
   LoRa.setPins(10, 9, 2); // NSS, RESET, DIO0
-  if (!LoRa.begin(freqList[hopIndex])) {
+  if (!LoRa.begin(SYNC_FREQ)) {
     Serial.println("Starting LoRa failed!");
     while (1);
   }
@@ -69,20 +83,23 @@ void setup() {
 }
 
 void loop() {
-  long currentFreq = UpdateHopFreq();
+  if (IsNewHop()) {
+    long currentFreq = nextHop();
 
-  SendSyncPacket();
-  delay(200);
+    SendSyncPacket(currentFreq);
+    delay(syncDelay);
+    
+    LoRa.beginPacket();
+    LoRa.print("MSG: Hello on ");
+    LoRa.print(currentFreq);
+    LoRa.endPacket();
 
-  LoRa.beginPacket();
-  LoRa.print("MSG: Hello on ");
-  LoRa.print(freqList[hopIndex]);
-  LoRa.endPacket();
+    Serial.print("Sent data on ");
+    Serial.println(currentFreq);
 
-  Serial.print("Sent data on ");
-  Serial.println(currentFreq);
+    Serial.println("-----------------------------");
+  }
 
-  Serial.println("-----------------------------");
-  delay(hopInterval);
+  delay(50);
 }
 
