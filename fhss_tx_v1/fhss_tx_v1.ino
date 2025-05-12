@@ -5,11 +5,27 @@ const long freqList[] = {868100000, 868300000, 868500000};
 const int freqCount = sizeof(freqList) / sizeof(freqList[0]);
 const long SYNC_FREQ = 868200000;
 
+const uint32_t seed = 123456;
+
 unsigned long hopInterval = 10000;
 unsigned long lastHopTime = 0;
 int hopIndex = -1;
 
 int isSyncronized = 0;
+
+int pseudoRandom(int index, uint32_t seed) {
+  uint32_t lfsr = seed;
+
+  // Прокручуємо LFSR index разів — генерація псевдовипадкового числа
+  for (int i = 0; i < index; i++) {
+    // Простий 32-бітний LFSR
+    lfsr ^= lfsr << 13;
+    lfsr ^= lfsr >> 17;
+    lfsr ^= lfsr << 5;
+  }
+
+  return lfsr % freqCount; // повертаємо індекс із freqList
+}
 
 void SendSyncPacket() {
   LoRa.setFrequency(SYNC_FREQ);
@@ -25,11 +41,18 @@ void SendSyncPacket() {
 }
 
 // Обираємо нову частоту для хопу
-long UpdateHopFreq() {
+long UpdateHopFreq(bool isRandom=true) {
   hopIndex = (hopIndex + 1) % freqCount;
-  long currentFreq = freqList[hopIndex];
+  int freqIdx = hopIndex;
+  if (isRandom) {
+    freqIdx = pseudoRandom(hopIndex, seed);
+  }
+
+  long currentFreq = freqList[freqIdx];
   LoRa.setFrequency(currentFreq);
+
   lastHopTime = millis();
+
   return currentFreq;
 }
 

@@ -13,12 +13,33 @@ int hopIndex = 0;
 
 bool synced = false;
 
+int pseudoRandom(int index, uint32_t seed) {
+  uint32_t lfsr = seed;
+
+  // Прокручуємо LFSR index разів — генерація псевдовипадкового числа
+  for (int i = 0; i < index; i++) {
+    // Простий 32-бітний LFSR
+    lfsr ^= lfsr << 13;
+    lfsr ^= lfsr >> 17;
+    lfsr ^= lfsr << 5;
+  }
+
+  return lfsr % freqCount; // повертаємо індекс із freqList
+}
+
 // Обираємо нову частоту для хопу
-long UpdateHopFreq() {
+long UpdateHopFreq(bool isRandom=true) {
   hopIndex = (hopIndex + 1) % freqCount;
-  long currentFreq = freqList[hopIndex];
+  int freqIdx = hopIndex;
+  if (isRandom) {
+    freqIdx = pseudoRandom(hopIndex, seed);
+  }
+
+  long currentFreq = freqList[freqIdx];
   LoRa.setFrequency(currentFreq);
+
   lastHopTime = millis();
+
   return currentFreq;
 }
 
