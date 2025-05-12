@@ -1,5 +1,6 @@
 #include <SPI.h>
 #include <LoRa.h>
+#include "auth.h"
 #include "init.h"
 
 bool isTx = false;
@@ -7,11 +8,17 @@ bool isTx = false;
 int syncHopIndex = 0;
 unsigned long syncTime = 0;
 
+const char* deviceID = "NODE1";
+const byte hmacKey[] = { 0xAA, 0xBB, 0xCC, 0xDD }; // 128-бітовий ключ
+
+
 #pragma region TX_VARS
 
-unsigned long syncDelay = 50;
+unsigned long syncDelay = 100;
 
 #pragma endregion
+
+
 
 #pragma region RX_VARS
 
@@ -99,13 +106,21 @@ void loopTx() {
     SendSyncPacket(currentFreq);
     delay(syncDelay);
     
+    String payload = "MSG: Hello on " + String(currentFreq);
+    String fullPacket = getSecureMessage(payload, deviceID, hmacKey);
     LoRa.beginPacket();
-    LoRa.print("MSG: Hello on ");
-    LoRa.print(currentFreq);
+    LoRa.print(fullPacket);
     LoRa.endPacket();
 
-    Serial.print("Sent data on ");
-    Serial.println(currentFreq);
+    Serial.println("Sent: " + fullPacket);
+
+    // LoRa.beginPacket();
+    // LoRa.print(payload);
+    // LoRa.print(currentFreq);
+    // LoRa.endPacket();
+
+    // Serial.print("Sent data on ");
+    // Serial.println(currentFreq);
 
     Serial.println("-----------------------------");
   }
@@ -131,11 +146,13 @@ void setupRx() {
   Serial.println("Receiver ready, waiting for SYNC...");
 }
 void loopRx() {
+  int packetSize;
+  String message;
   if (!synced) {
     LoRa.setFrequency(SYNC_FREQ);
-    int packetSize = LoRa.parsePacket();
+    packetSize = LoRa.parsePacket();
     if (packetSize) {
-      String message = "";
+      message = "";
       while (LoRa.available()) {
         message += (char)LoRa.read();
       }
@@ -155,12 +172,31 @@ void loopRx() {
   }
 
   // Отримання даних на синхронізованій частоті
-  int packetSize = LoRa.parsePacket();
+  packetSize = LoRa.parsePacket();
   if (packetSize) {
-    String message = "";
+    message = "";
     while (LoRa.available()) {
       message += (char)LoRa.read();
     }
+
+    int pos1 = message.indexOf('|');
+    int pos3 = message.indexOf('|', pos1 + 1);
+
+    if (pos1 == -1 || pos3 == -1) {
+      Serial.println("❌ Invalid format");
+      return;
+    }
+    String deviceID = message.substring(0, pos1);
+    String payload = message.substring(pos1 + 1, pos3);
+    String receivedHMAC = message.substring(pos3 + 1);
+
+    String base = deviceID + "|" + payload;
+    // if (verifyHMAC(base, hmacKey, receivedHMAC)) {
+    //   Serial.println("✅ Authenticated: " + message);
+    // } else {
+    //   Serial.println("❌ Invalid HMAC — possibly spoofed");
+    // }
+
     Serial.print("Received: ");
     Serial.println(message);
   }
