@@ -2,17 +2,20 @@
 #include <LoRa.h>
 #include "auth.h"
 #include "init.h"
+#include "deviceinfo.h"
 
-bool isTx = false;
+bool isTx = true;
 
 int syncHopIndex = 0;
 unsigned long syncTime = 0;
 
-const char* deviceID = "NODE1";
-const byte hmacKey[] = { 0xAA, 0xBB, 0xCC, 0xDD }; // 128-бітовий ключ
-
 
 #pragma region TX_VARS
+
+const char* deviceID = "NODE1";
+const byte hmacKey[] = { 0x11, 0x22, 0x33, 0x44 }; // 128-бітовий ключ
+
+
 
 unsigned long syncDelay = 100;
 
@@ -24,12 +27,20 @@ uint32_t frameCounter = 0; // оновлюється після кожного �
 
 #pragma region RX_VARS
 
+DeviceInfo trustedDevices[] = {
+  {"NODE1", {0xAA, 0xBB, 0xCC, 0xDD}, 0},
+  {"NODE2", {0x11, 0x22, 0x33, 0x44}, 0},
+};
+
+const int deviceCount = sizeof(trustedDevices) / sizeof(trustedDevices[0]);
+
+
+
 bool synced = false;
 
 int requestPerMinute = 60000 / hopInterval;
 
 const int REPLAY_WINDOW = 5 * requestPerMinute;
-int32_t lastFrameCounter = -1;
 
 #pragma endregion
 
@@ -153,30 +164,37 @@ void processPacket(String packet) {
     return;
   }
 
-  String deviceID = packet.substring(0, pos1);
+  String deviceIDStr = packet.substring(0, pos1);
   String frameStr = packet.substring(pos1 + 1, pos2);
   String payload = packet.substring(pos2 + 1, pos3);
   String receivedHMAC = packet.substring(pos3 + 1);
 
+  DeviceInfo* device = findDevice(deviceIDStr, trustedDevices, deviceCount);
+  if (device == nullptr) {
+    Serial.println("🚫 Unknown device ID: " + deviceIDStr);
+    return;
+  }
+
   int32_t receivedFrameCounter = frameStr.toInt();
-  Serial.println("receivedFrameCounter: " + String(receivedFrameCounter) + "; lastFrameCounter: " + String(lastFrameCounter));
+  Serial.println("receivedFrameCounter: " + String(receivedFrameCounter) + "; lastFrameCounter: " + String(device->lastFrameCounter));
   // Перевірка на повтор
-  if (receivedFrameCounter <= lastFrameCounter) {
+  if (receivedFrameCounter <= device->lastFrameCounter) {
     Serial.println("⚠️ Replay attempt — frame too old");
     return;
   }
 
-  if (receivedFrameCounter > lastFrameCounter + REPLAY_WINDOW) {
+  if (receivedFrameCounter > device->lastFrameCounter + REPLAY_WINDOW) {
     Serial.println("⚠️ Frame too far ahead — possible sync issue");
     return;
   }
 
-  String base = deviceID + "|" + frameStr + "|" + payload;
+  String base = deviceIDStr + "|" + frameStr + "|" + payload;
 
-  if (verifyHMAC(base, hmacKey, receivedHMAC)) {
-    Serial.println("✅ Authenticated: " + base);
-    lastFrameCounter = receivedFrameCounter;
-  } else {
+  if (verifyHMAC(base, device->hmacKey, receivedHMAC)) {
+    device->lastFrameCounter = receivedFrameCounter;
+    Serial.println("✅ Accepted from " + deviceIDStr + ": " + payload + "(" + frameStr + ")");
+  } 
+  else {
     Serial.println("❌ Invalid HMAC — possibly spoofed");
   }
 }
