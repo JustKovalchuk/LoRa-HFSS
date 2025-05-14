@@ -16,6 +16,8 @@ const byte hmacKey[] = { 0xAA, 0xBB, 0xCC, 0xDD }; // 128-бітовий клю�
 
 unsigned long syncDelay = 100;
 
+uint32_t frameCounter = 0; // оновлюється після кожного пакету
+
 #pragma endregion
 
 
@@ -23,6 +25,11 @@ unsigned long syncDelay = 100;
 #pragma region RX_VARS
 
 bool synced = false;
+
+int requestPerMinute = 60000 / hopInterval;
+
+const int REPLAY_WINDOW = 5 * requestPerMinute;
+int32_t lastFrameCounter = -1;
 
 #pragma endregion
 
@@ -107,13 +114,15 @@ void loopTx() {
     delay(syncDelay);
     
     String payload = "MSG: Hello on " + String(currentFreq);
-    String fullPacket = getSecureMessage(payload, deviceID, hmacKey);
+    String fullPacket = getSecureMessage(payload, deviceID, frameCounter, hmacKey);
+    
     LoRa.beginPacket();
     LoRa.print(fullPacket);
     LoRa.endPacket();
 
     Serial.println("Sent: " + fullPacket);
 
+    frameCounter++;
     // LoRa.beginPacket();
     // LoRa.print(payload);
     // LoRa.print(currentFreq);
@@ -134,6 +143,44 @@ void loopTx() {
 
 #pragma region RX
 
+void processPacket(String packet) {
+  int pos1 = packet.indexOf('|');
+  int pos2 = packet.indexOf('|', pos1 + 1);
+  int pos3 = packet.indexOf('|', pos2 + 1);
+
+  if (pos1 == -1 || pos2 == -1 || pos3 == -1) {
+    Serial.println("❌ Invalid format");
+    return;
+  }
+
+  String deviceID = packet.substring(0, pos1);
+  String frameStr = packet.substring(pos1 + 1, pos2);
+  String payload = packet.substring(pos2 + 1, pos3);
+  String receivedHMAC = packet.substring(pos3 + 1);
+
+  int32_t receivedFrameCounter = frameStr.toInt();
+  Serial.println("receivedFrameCounter: " + String(receivedFrameCounter) + "; lastFrameCounter: " + String(lastFrameCounter));
+  // Перевірка на повтор
+  if (receivedFrameCounter <= lastFrameCounter) {
+    Serial.println("⚠️ Replay attempt — frame too old");
+    return;
+  }
+
+  if (receivedFrameCounter > lastFrameCounter + REPLAY_WINDOW) {
+    Serial.println("⚠️ Frame too far ahead — possible sync issue");
+    return;
+  }
+
+  String base = deviceID + "|" + frameStr + "|" + payload;
+
+  if (verifyHMAC(base, hmacKey, receivedHMAC)) {
+    Serial.println("✅ Authenticated: " + base);
+    lastFrameCounter = receivedFrameCounter;
+  } else {
+    Serial.println("❌ Invalid HMAC — possibly spoofed");
+  }
+}
+
 void setupRx() {
   Serial.begin(115200);
   while (!Serial);
@@ -144,6 +191,7 @@ void setupRx() {
     while (1);
   }
   Serial.println("Receiver ready, waiting for SYNC...");
+  Serial.println("REPLAY_WINDOW" + String(REPLAY_WINDOW));
 }
 void loopRx() {
   int packetSize;
@@ -179,26 +227,10 @@ void loopRx() {
       message += (char)LoRa.read();
     }
 
-    int pos1 = message.indexOf('|');
-    int pos3 = message.indexOf('|', pos1 + 1);
+    processPacket(message);
 
-    if (pos1 == -1 || pos3 == -1) {
-      Serial.println("❌ Invalid format");
-      return;
-    }
-    String deviceID = message.substring(0, pos1);
-    String payload = message.substring(pos1 + 1, pos3);
-    String receivedHMAC = message.substring(pos3 + 1);
-
-    String base = deviceID + "|" + payload;
-    // if (verifyHMAC(base, hmacKey, receivedHMAC)) {
-    //   Serial.println("✅ Authenticated: " + message);
-    // } else {
-    //   Serial.println("❌ Invalid HMAC — possibly spoofed");
-    // }
-
-    Serial.print("Received: ");
-    Serial.println(message);
+    // Serial.print("Received: ");
+    // Serial.println(message);
   }
 
   // Перехід на нову частоту

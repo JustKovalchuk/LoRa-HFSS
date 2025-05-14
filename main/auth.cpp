@@ -2,8 +2,9 @@
 #include <SHA256.h>
 #include "auth.h"
 
+SHA256 sha256;
+
 String getHMAC(String message, byte hmacKey[]) {
-  SHA256 sha256;
   sha256.resetHMAC(hmacKey, sizeof(hmacKey));
   sha256.update((const byte*)message.c_str(), message.length());
 
@@ -19,8 +20,8 @@ String getHMAC(String message, byte hmacKey[]) {
   return hmacStr;
 }
 
-String getSecureMessage(String payload, char* deviceID, byte hmacKey[]) {
-  String base = String(deviceID) + "|" + payload;
+String getSecureMessage(String payload, char* deviceID, int32_t frameCounter, byte hmacKey[]) {
+  String base = String(deviceID) + "|" + String(frameCounter) + "|" + payload;
   String hmac = getHMAC(base, hmacKey);
   String fullPacket = base + "|" + hmac;
 
@@ -28,7 +29,6 @@ String getSecureMessage(String payload, char* deviceID, byte hmacKey[]) {
 }
 
 bool verifyHMAC(String base, byte hmacKey[], String receivedHMAC) {
-  SHA256 sha256;
   sha256.resetHMAC(hmacKey, sizeof(hmacKey));
   sha256.update((const byte*)base.c_str(), base.length());
 
