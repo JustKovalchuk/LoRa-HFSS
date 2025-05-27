@@ -4,16 +4,32 @@
 #include "init.h"
 #include "deviceinfo.h"
 
-bool isTx = true;
+#include <Wire.h>
+#include <RTClib.h>
+
+bool isTx = false;
+bool isRtcConnected = false;
+DateTime baseRTCTime(2025, 5, 23, 0, 0, 0);
+// bool isDisplayConnected = false;
 
 int syncHopIndex = 0;
 unsigned long syncTime = 0;
+
+RTC_DS3231 rtc;
+
+
+
+// #define SCREEN_WIDTH 128 
+// #define SCREEN_HEIGHT 8
+// // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+// Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
 
 
 #pragma region TX_VARS
 
 const char* deviceID = "NODE1";
-const byte hmacKey[] = { 0x11, 0x22, 0x33, 0x44 }; // 128-бітовий ключ
+const byte hmacKey[] = { 0xAA, 0xBB, 0xCC, 0xDD }; // 128-бітовий ключ
 
 
 
@@ -44,17 +60,43 @@ const int REPLAY_WINDOW = 5 * requestPerMinute;
 
 #pragma endregion
 
-
+unsigned long getRTCTime() {
+  return (rtc.now().unixtime()-baseRTCTime.unixtime())*1000;
+}
 
 bool IsNewHop(){
-  return millis() - lastHopTime > hopInterval;
+  if (isRtcConnected) {
+    return getRTCTime() - lastHopTime >= hopInterval;
+  }
+  else {
+    return millis() - lastHopTime >= hopInterval;
+  }
+}
+
+void setInitHopIndex() {
+  if (isRtcConnected){
+    unsigned long timeSinceSync = getRTCTime();
+    unsigned long hopsSinceSync = timeSinceSync/hopInterval;
+    unsigned long int currentFreqIndex = hopsSinceSync / freqCount;
+    lastHopTime = hopsSinceSync*hopInterval;
+    hopIndex = hopsSinceSync % freqCount;
+  }
+  Serial.println("_____________________");
 }
 
 void UpdateLastHopTime() {
-  unsigned long timeSinceSync = millis()-syncTime;
-  int hopsSinceSync = timeSinceSync/hopInterval;
-  int currentFreqIndex = (syncHopIndex + hopsSinceSync) / freqCount;
-  lastHopTime = syncTime + hopsSinceSync*hopInterval;
+  if (isRtcConnected){
+    unsigned long timeSinceSync = getRTCTime();
+    unsigned long hopsSinceSync = timeSinceSync/hopInterval;
+    unsigned long currentFreqIndex = hopsSinceSync / freqCount;
+    lastHopTime = hopsSinceSync*hopInterval;
+  }
+  else {
+    unsigned long timeSinceSync = millis()-syncTime;
+    int hopsSinceSync = timeSinceSync/hopInterval;
+    int currentFreqIndex = (syncHopIndex + hopsSinceSync) / freqCount;
+    lastHopTime = syncTime + hopsSinceSync*hopInterval;
+  }
 }
 
 int pseudoRandom(int index, uint32_t seed) {
@@ -110,6 +152,25 @@ void setupTx(){
   Serial.begin(9600);
   while (!Serial);
 
+  Wire.begin();
+  // Try to connect to RTC 10 times
+  for (int attempts = 0; attempts < 10; attempts++) {
+    if (rtc.begin()) {
+      isRtcConnected = true;
+      Serial.println("✅ RTC connected.");
+      break;
+    } else {
+      Serial.print("⏳ RTC not responding (attempt ");
+      Serial.print(attempts + 1);
+      Serial.println("/10)");
+      delay(300);
+    }
+  }
+
+  if (!isRtcConnected) {
+    Serial.println("⚠️ RTC not found. Continuing without RTC.");
+  }
+
   LoRa.setPins(10, 9, 2); // NSS, RESET, DIO0
   if (!LoRa.begin(SYNC_FREQ)) {
     Serial.println("Starting LoRa failed!");
@@ -118,11 +179,27 @@ void setupTx(){
   Serial.println("Transmitter ready");
 }
 void loopTx() {
+  if (!synced) {
+    if (isRtcConnected) {
+      setInitHopIndex();
+    }
+    synced = true;
+  }
+
   if (IsNewHop()) {
     long currentFreq = nextHop();
 
-    SendSyncPacket(currentFreq);
-    delay(syncDelay);
+    Serial.print("RTCtime: ");
+    Serial.println(getRTCTime());
+    Serial.print("lastHopTime: ");
+    Serial.println(lastHopTime);
+    Serial.print("hopInterval: ");
+    Serial.println(hopInterval);
+
+    if (!isRtcConnected){
+      SendSyncPacket(currentFreq);
+      delay(syncDelay);
+    }
     
     String payload = "MSG: Hello on " + String(currentFreq);
     String fullPacket = getSecureMessage(payload, deviceID, frameCounter, hmacKey);
@@ -134,13 +211,11 @@ void loopTx() {
     Serial.println("Sent: " + fullPacket);
 
     frameCounter++;
-    // LoRa.beginPacket();
-    // LoRa.print(payload);
-    // LoRa.print(currentFreq);
-    // LoRa.endPacket();
+    Serial.print("RTC unixTime: ");
+    Serial.println(getRTCTime());
 
-    // Serial.print("Sent data on ");
-    // Serial.println(currentFreq);
+    Serial.print("lastHopTime: ");
+    Serial.println(lastHopTime);
 
     Serial.println("-----------------------------");
   }
@@ -193,6 +268,13 @@ void processPacket(String packet) {
   if (verifyHMAC(base, device->hmacKey, receivedHMAC)) {
     device->lastFrameCounter = receivedFrameCounter;
     Serial.println("✅ Accepted from " + deviceIDStr + ": " + payload + "(" + frameStr + ")");
+    // if (isDisplayConnected) {
+    //   display.clearDisplay();
+    //   display.setCursor(0, 0);
+
+    //   display.println(deviceIDStr + ": " + payload + "(" + frameStr + ")");
+    //   display.display(); 
+    // }
   } 
   else {
     Serial.println("❌ Invalid HMAC — possibly spoofed");
@@ -202,41 +284,90 @@ void processPacket(String packet) {
 void setupRx() {
   Serial.begin(115200);
   while (!Serial);
+  
+  Wire.begin();
+  // Try to connect to RTC 10 times
+  for (int attempts = 0; attempts < 10; attempts++) {
+    if (rtc.begin()) {
+      isRtcConnected = true;
+      Serial.println("✅ RTC connected.");
+      break;
+    } else {
+      Serial.print("⏳ RTC not responding (attempt ");
+      Serial.print(attempts + 1);
+      Serial.println("/10)");
+      delay(300);
+    }
+  }
+
+  if (!isRtcConnected) {
+    Serial.println("⚠️ RTC not found. Continuing without RTC.");
+  }
+
+  // if (isDisplayConnected) {
+  //   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
+  //     Serial.println(F("SSD1306 allocation failed"));
+  //     for(;;);
+  //   }
+  // }
 
   LoRa.setPins(10, 9, 2); // NSS, RESET, DIO0
   if (!LoRa.begin(SYNC_FREQ)) {
     Serial.println("Starting LoRa failed!");
     while (1);
   }
-  Serial.println("Receiver ready, waiting for SYNC...");
-  Serial.println("REPLAY_WINDOW" + String(REPLAY_WINDOW));
+
+
+  String printString = "Receiver ready, waiting for SYNC...";
+  Serial.println(printString);
+
+  // if (isDisplayConnected) {
+  //   display.clearDisplay();
+  //   display.setTextSize(1);
+  //   display.setTextColor(WHITE);
+  //   display.setCursor(0, 0);
+
+  //   display.println(printString);
+  //   display.display(); 
+  // }
 }
 void loopRx() {
   int packetSize;
   String message;
+
   if (!synced) {
-    LoRa.setFrequency(SYNC_FREQ);
-    packetSize = LoRa.parsePacket();
-    if (packetSize) {
-      message = "";
-      while (LoRa.available()) {
-        message += (char)LoRa.read();
-      }
-      if (message.startsWith("SYNC:")) {
-        syncTime = millis();
-        syncHopIndex = message.substring(5).toInt();
-        hopIndex = syncHopIndex;
-        Serial.print("Got SYNC. Index: ");
-        Serial.println(hopIndex);
-        synced = true;
-        long currentFreq = getCurrentFreq(hopIndex);
-        LoRa.setFrequency(currentFreq);
-        lastHopTime = millis();
+    if (isRtcConnected) {
+      setInitHopIndex();
+      Serial.print("Got RTC SYNC. Index: ");
+      Serial.println(hopIndex);
+      synced = true;
+      long currentFreq = getCurrentFreq(hopIndex);
+      LoRa.setFrequency(currentFreq);
+    }
+    else {
+      LoRa.setFrequency(SYNC_FREQ);
+      packetSize = LoRa.parsePacket();
+      if (packetSize) {
+        message = "";
+        while (LoRa.available()) {
+          message += (char)LoRa.read();
+        }
+        if (message.startsWith("SYNC:")) {
+          syncTime = millis();
+          syncHopIndex = message.substring(5).toInt();
+          hopIndex = syncHopIndex;
+          Serial.print("Got SYNC. Index: ");
+          Serial.println(hopIndex);
+          synced = true;
+          long currentFreq = getCurrentFreq(hopIndex);
+          LoRa.setFrequency(currentFreq);
+          lastHopTime = millis();
+        }
       }
     }
     return;
   }
-
+  
   // Отримання даних на синхронізованій частоті
   packetSize = LoRa.parsePacket();
   if (packetSize) {
@@ -254,6 +385,14 @@ void loopRx() {
   // Перехід на нову частоту
   if (IsNewHop()) {
     Serial.println("-----------------------------");
+
+    Serial.print("RTCtime: ");
+    Serial.println(getRTCTime());
+    Serial.print("lastHopTime: ");
+    Serial.println(lastHopTime);
+    Serial.print("hopInterval: ");
+    Serial.println(hopInterval);
+
     long currentFreq = nextHop();
     Serial.print("Hopped with hop index ");
     Serial.print(hopIndex);
