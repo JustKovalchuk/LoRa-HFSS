@@ -4,6 +4,7 @@
 
 ChaCha chacha;
 
+int8_t numRounds = 20;
 const uint8_t key[32] = {
   0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
   0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
@@ -11,14 +12,41 @@ const uint8_t key[32] = {
   0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F
 };
 
-const uint8_t nonce[12] = {
+const uint8_t iv[12] = {
   0xAA, 0xBB, 0xCC, 0xDD,
   0x01, 0x02, 0x03, 0x04,
   0x05, 0x06, 0x07, 0x08
 };
 
-char plaintext[] = "SecureLoRaChaCha20";
-char buffer[64]; // для шифрованого та дешифрованого тексту
+byte plaintext[] = {
+  97, 74,                  // SpO2, Pulse
+  0x79, 0xB2, 0x28, 0x12,  // Longitude
+  0xF9, 0xA1, 0x01, 0x1E,  // Latitude
+  0x45, 0xC3, 0x53, 0x66   // Timestamp
+};
+const int dataLength = sizeof(plaintext);  
+
+// char plaintext[] = "SecureLoRaChaCha20";
+// const int dataLength = strlen(plaintext); 
+
+char buffer[256];
+
+void printByteArray(const char* label, const byte* data, int length) {
+  Serial.print(label);
+  for (int i = 0; i < length; i++) {
+    if (data[i] < 0x10) Serial.print("0");
+    Serial.print(data[i], HEX);
+    Serial.print(" ");
+  }
+  Serial.println();
+}
+
+uint32_t toUint32(byte* data) {
+  return ((uint32_t)data[0]) |
+         ((uint32_t)data[1] << 8) |
+         ((uint32_t)data[2] << 16) |
+         ((uint32_t)data[3] << 24);
+}
 
 void printHex(const char* label, uint8_t* data, size_t len) {
   Serial.print(label);
@@ -30,50 +58,55 @@ void printHex(const char* label, uint8_t* data, size_t len) {
   Serial.println();
 }
 
-extern int __heap_start, *__brkval;
-int freeMemory() {
-  int v;
-  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
-}
-
 void setup() {
   Serial.begin(9600);
   delay(1000);
 
-  Serial.print("Plaintext: ");
-  Serial.println(plaintext);
+  Serial.println("ChaCha20 Example");
+
+  printByteArray("Plaintext bytes:   ", plaintext, dataLength);
 
   size_t len = strlen(plaintext);
 
-  // Копіюємо plaintext у buffer
-  memcpy(buffer, plaintext, len);
+  memcpy(buffer, plaintext, dataLength);
 
   // Шифрування
   chacha.clear();
+  chacha.setNumRounds(numRounds);
   chacha.setKey(key, sizeof(key));
-  chacha.setIV(nonce, sizeof(nonce));
-  unsigned long start = micros();
-  chacha.encrypt(buffer, buffer, len);  // in-place
-  unsigned long end = micros();
-  Serial.print("Time to encrypt: ");
-  Serial.println(end - start);
-
-  printHex("Encrypted: ", (uint8_t*)buffer, len);
+  chacha.setIV(iv, sizeof(iv));
+  chacha.encrypt(buffer, buffer, dataLength);
+  printByteArray("Ciphertext bytes:  ", (uint8_t*)buffer, dataLength);
 
   // Дешифрування
   chacha.clear();
+  chacha.setNumRounds(numRounds);
   chacha.setKey(key, sizeof(key));
-  chacha.setIV(nonce, sizeof(nonce));
-  chacha.encrypt(buffer, buffer, len); // in-place decrypt (same as encrypt)
+  chacha.setIV(iv, sizeof(iv));
+  chacha.decrypt(buffer, buffer, dataLength);
 
-  Serial.print("Decrypted: ");
-  buffer[len] = '\0';
-  Serial.println(buffer);
+  printByteArray("Decrypted bytes:   ", (uint8_t*)buffer, dataLength);
+  
+  uint8_t spO2   = buffer[0];
+  uint8_t pulse  = buffer[1];
 
-  Serial.print("Free memory: ");
-  Serial.println(freeMemory());
+  uint32_t longitude = toUint32((byte*)&buffer[2]);
+  uint32_t latitude  = toUint32((byte*)&buffer[6]);
+  uint32_t timestamp = toUint32((byte*)&buffer[10]);
+
+  Serial.println();
+  Serial.print("HEX to String data: ");
+
+  Serial.print("SpO2: "); Serial.println(spO2);
+  Serial.print("Pulse: "); Serial.println(pulse);
+  Serial.print("Longitude (raw): "); Serial.println(longitude);
+  Serial.print("Latitude (raw): "); Serial.println(latitude);
+  Serial.print("Unix time: "); Serial.println(timestamp);
+
+  Serial.print("Longitude (°): "); Serial.println((float)longitude / 1e7, 7);
+  Serial.print("Latitude (°): ");  Serial.println((float)latitude / 1e7, 7);
+  Serial.println();
 }
 
 void loop() {
-  // порожньо
 }

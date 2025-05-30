@@ -1,96 +1,157 @@
-#include <AESLib.h>
+// Об'єднаний приклад ChaCha20 та AES-256 CTR
+// Використовує Crypto бібліотеку
 
-AESLib aesLib;
+#include <Crypto.h>
+#include <ChaCha.h>
+#include <AES.h>
+#include <CTR.h>
 
-// 256-бітний ключ (32 байти)
-byte aes_key[32] = {
-  0xa9, 0x22, 0x56, 0x65, 0x79, 0x71, 0x2d, 0x0b,
-  0x2b, 0x73, 0xae, 0xf0, 0x85, 0x7d, 0x77, 0x81,
-  0x1f, 0x35, 0x2c, 0x07, 0x3b, 0x61, 0x08, 0xd7,
-  0x2d, 0x98, 0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4
-};
-
-byte aes_iv[16] = {
-  0x79, 0x4E, 0x98, 0x21, 0xAE, 0xD8, 0xA6, 0xAA,
-  0xD7, 0x97, 0x44, 0x14, 0xAB, 0xDD, 0x9F, 0x2C
-};
-
-byte iv_enc[16];
-byte iv_dec[16];
-
-char buffer[64];
-char ciphertext[64];
-char decryptedtext[64];
-
-int padLength(int len) {
-  int pad = 16 - (len % 16);
-  return pad;
-}
-
-void padBuffer(char* buf, int len) {
-  int pad = padLength(len);
-  for (int i = len; i < len + pad; i++) {
-    buf[i] = (char)pad;
+void printByteArray(const char* label, const byte* data, int length) {
+  Serial.print(label);
+  for (int i = 0; i < length; i++) {
+    if (data[i] < 0x10) Serial.print("0");
+    Serial.print(data[i], HEX);
+    Serial.print(" ");
   }
-  buf[len + pad] = '\0';
+  Serial.println();
 }
 
-int unpadBuffer(char* buf, int len) {
-  int pad = (int)buf[len - 1];
-  if (pad < 1 || pad > 16) return len;
-  return len - pad;
+uint32_t toUint32(byte* data) {
+  return ((uint32_t)data[0]) |
+         ((uint32_t)data[1] << 8) |
+         ((uint32_t)data[2] << 16) |
+         ((uint32_t)data[3] << 24);
 }
 
-extern int __heap_start, *__brkval;
-int freeMemory() {
-  int v;
-  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
-}
+ChaCha chacha;
+AES256 aes256;
+CTR<AES256> ctr;
+AES128 aes128;
+CTR<AES128> ctr128;
+
+int8_t numRounds = 20;
+
+const uint8_t key[32] = {
+  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+  0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+  0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+  0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F
+};
+const uint8_t key128[16] = {
+  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+  0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+};
+
+const uint8_t iv[12] = {
+  0xAA, 0xBB, 0xCC, 0xDD,
+  0x01, 0x02, 0x03, 0x04,
+  0x05, 0x06, 0x07, 0x08
+};
+
+byte plaintext[] = {
+  97, 74,
+  0x79, 0xB2, 0x28, 0x12,
+  0xF9, 0xA1, 0x01, 0x1E,
+  0x45, 0xC3, 0x53, 0x66
+};
+const int dataLength = sizeof(plaintext);
+
+char buffer[256];
+byte ciphertext[64];
+byte decrypted[64];
 
 void setup() {
   Serial.begin(9600);
   delay(1000);
 
-  char plaintext[] = "HelloSecureLoRa|data";
-  int len = strlen(plaintext);
-  int pad = padLength(len);
+  // ==== ChaCha20 ====
+  Serial.println("ChaCha20 Encryption:");
+  printByteArray("Plaintext:   ", plaintext, dataLength);
 
-  memset(buffer, 0, sizeof(buffer));
-  memcpy(buffer, plaintext, len);
-  padBuffer(buffer, len);
+  memcpy(buffer, plaintext, dataLength);
+  chacha.clear();
+  chacha.setNumRounds(numRounds);
+  chacha.setKey(key, sizeof(key));
+  chacha.setIV(iv, sizeof(iv));
+  chacha.encrypt(buffer, buffer, dataLength);
+  printByteArray("Ciphertext:  ", (uint8_t*)buffer, dataLength);
 
-  Serial.print("Original: ");
-  Serial.println(plaintext);
+  chacha.clear();
+  chacha.setNumRounds(numRounds);
+  chacha.setKey(key, sizeof(key));
+  chacha.setIV(iv, sizeof(iv));
+  chacha.decrypt(buffer, buffer, dataLength);
+  printByteArray("Decrypted:   ", (uint8_t*)buffer, dataLength);
 
-  // === ШИФРУВАННЯ ===
-  memcpy(iv_enc, aes_iv, 16);
-  unsigned long start_enc = micros();
-  uint16_t ciphertextLength = aesLib.encrypt64(buffer, len + pad, ciphertext, aes_key, sizeof(aes_key), iv_enc);
-  unsigned long end_enc = micros();
+  uint8_t spO2   = buffer[0];
+  uint8_t pulse  = buffer[1];
+  uint32_t longitude = toUint32((byte*)&buffer[2]);
+  uint32_t latitude  = toUint32((byte*)&buffer[6]);
+  uint32_t timestamp = toUint32((byte*)&buffer[10]);
 
-  Serial.print("Time to encrypt (us): ");
-  Serial.println(end_enc - start_enc);
-  Serial.print("Encrypted (base64): ");
-  Serial.println(ciphertext);
+  Serial.println("Parsed ChaCha20:");
+  Serial.print("SpO₂: "); Serial.println(spO2);
+  Serial.print("Pulse: "); Serial.println(pulse);
+  Serial.print("Longitude: "); Serial.println((float)longitude / 1e7, 7);
+  Serial.print("Latitude: ");  Serial.println((float)latitude / 1e7, 7);
+  Serial.print("Unix time: "); Serial.println(timestamp);
+  Serial.println();
 
-  // === ДЕШИФРУВАННЯ ===
-  memcpy(iv_dec, aes_iv, 16);
-  unsigned long start_dec = micros();
-  uint16_t decryptedLength = aesLib.decrypt64(ciphertext, ciphertextLength, decryptedtext, aes_key, sizeof(aes_key), iv_dec);
-  unsigned long end_dec = micros();
+  // ==== AES-256 CTR ====
+  Serial.println("AES-256 CTR Encryption:");
+  printByteArray("Plaintext:   ", plaintext, dataLength);
 
-  Serial.print("Time to decrypt (us): ");
-  Serial.println(end_dec - start_dec);
+  ctr.setKey(key, sizeof(key));
+  ctr.setIV(iv, sizeof(iv));
+  ctr.encrypt(ciphertext, plaintext, dataLength);
+  printByteArray("Ciphertext:  ", ciphertext, dataLength);
 
-  int unpaddedLength = unpadBuffer(decryptedtext, decryptedLength);
-  decryptedtext[unpaddedLength] = '\0';
+  ctr.setKey(key, sizeof(key));
+  ctr.setIV(iv, sizeof(iv));
+  ctr.decrypt(decrypted, ciphertext, dataLength);
+  printByteArray("Decrypted:   ", decrypted, dataLength);
 
-  Serial.print("Decrypted text: ");
-  Serial.println(decryptedtext);
+  spO2   = decrypted[0];
+  pulse  = decrypted[1];
+  longitude = toUint32(&decrypted[2]);
+  latitude  = toUint32(&decrypted[6]);
+  timestamp = toUint32(&decrypted[10]);
 
-  // === RAM ===
-  Serial.print("Free memory (SRAM): ");
-  Serial.println(freeMemory());
+  Serial.println("Parsed AES-256 CTR:");
+  Serial.print("SpO₂: "); Serial.println(spO2);
+  Serial.print("Pulse: "); Serial.println(pulse);
+  Serial.print("Longitude: "); Serial.println((float)longitude / 1e7, 7);
+  Serial.print("Latitude: ");  Serial.println((float)latitude / 1e7, 7);
+  Serial.print("Unix time: "); Serial.println(timestamp);
+  Serial.println();
+
+  // ==== AES-128 CTR ====
+  Serial.println("AES-128 CTR Encryption:");
+  printByteArray("Plaintext:   ", plaintext, dataLength);
+
+  ctr128.setKey(key128, sizeof(key128));
+  ctr128.setIV(iv, sizeof(iv));
+  ctr128.encrypt(ciphertext, plaintext, dataLength);
+  printByteArray("Ciphertext:  ", ciphertext, dataLength);
+
+  ctr128.setKey(key128, sizeof(key128));
+  ctr128.setIV(iv, sizeof(iv));
+  ctr128.decrypt(decrypted, ciphertext, dataLength);
+  printByteArray("Decrypted:   ", decrypted, dataLength);
+
+  spO2   = decrypted[0];
+  pulse  = decrypted[1];
+  longitude = toUint32(&decrypted[2]);
+  latitude  = toUint32(&decrypted[6]);
+  timestamp = toUint32(&decrypted[10]);
+
+  Serial.println("Parsed AES-128 CTR:");
+  Serial.print("SpO₂: "); Serial.println(spO2);
+  Serial.print("Pulse: "); Serial.println(pulse);
+  Serial.print("Longitude: "); Serial.println((float)longitude / 1e7, 7);
+  Serial.print("Latitude: ");  Serial.println((float)latitude / 1e7, 7);
+  Serial.print("Unix time: "); Serial.println(timestamp);
+  Serial.println();
 }
 
 void loop() {}
