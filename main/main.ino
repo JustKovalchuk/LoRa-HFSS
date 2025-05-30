@@ -10,26 +10,29 @@ int syncHopIndex = 0;
 unsigned long syncTime = 0;
 
 
-#pragma region TX_VARS
-
-const char* deviceID = "NODE1";
-const byte hmacKey[] = { 0x11, 0x22, 0x33, 0x44 }; // 128-бітовий ключ
-
-
-
-unsigned long syncDelay = 100;
-
-uint32_t frameCounter = 0; // оновлюється після кожного пакету
-
-#pragma endregion
-
-
-
 #pragma region RX_VARS
 
 DeviceInfo trustedDevices[] = {
-  {"NODE1", {0xAA, 0xBB, 0xCC, 0xDD}, 0},
-  {"NODE2", {0x11, 0x22, 0x33, 0x44}, 0},
+  {
+    "NODE_ALPHA", 
+    {  
+      0x7D, 0x3A, 0xB1, 0xE8, 0x4F, 0x90, 0x23, 0x56,
+      0x88, 0xC1, 0xA4, 0xF2, 0x6E, 0x9D, 0x37, 0xE3,
+      0x5C, 0xFA, 0xB0, 0x48, 0x13, 0xAC, 0x1F, 0xD2,
+      0x9A, 0x77, 0x3E, 0x65, 0xB4, 0xDC, 0x11, 0x09
+    },
+    0
+  },
+  {
+    "NODE_BRAVO", 
+    {
+      0xC4, 0x1E, 0x28, 0x95, 0xAF, 0x62, 0xDB, 0x33,
+      0x17, 0x4A, 0x60, 0xB3, 0x02, 0x8C, 0x7F, 0xD7,
+      0xE1, 0x3D, 0xA9, 0xBC, 0xF4, 0x0A, 0x94, 0x71,
+      0x5D, 0x08, 0x36, 0xC9, 0x6B, 0xD5, 0xEF, 0x00
+    }, 
+    0
+  },
 };
 
 const int deviceCount = sizeof(trustedDevices) / sizeof(trustedDevices[0]);
@@ -43,6 +46,20 @@ int requestPerMinute = 60000 / hopInterval;
 const int REPLAY_WINDOW = 5 * requestPerMinute;
 
 #pragma endregion
+
+
+#pragma region TX_VARS
+
+DeviceInfo myDevice = trustedDevices[0]
+
+unsigned long syncDelay = 100;
+
+uint32_t frameCounter = 0; // оновлюється після кожного пакету
+
+#pragma endregion
+
+
+
 
 
 
@@ -125,7 +142,7 @@ void loopTx() {
     delay(syncDelay);
     
     String payload = "MSG: Hello on " + String(currentFreq);
-    String fullPacket = getSecureMessage(payload, deviceID, frameCounter, hmacKey);
+    String fullPacket = getSecureMessage(payload, myDevice.deviceID, frameCounter, myDevice.hmacKey, sizeof(myDevice.hmacKey));
     
     LoRa.beginPacket();
     LoRa.print(fullPacket);
@@ -190,7 +207,7 @@ void processPacket(String packet) {
 
   String base = deviceIDStr + "|" + frameStr + "|" + payload;
 
-  if (verifyHMAC(base, device->hmacKey, receivedHMAC)) {
+  if (verifyHMAC(base, device->hmacKey, sizeof(device->hmacKey), receivedHMAC)) {
     device->lastFrameCounter = receivedFrameCounter;
     Serial.println("✅ Accepted from " + deviceIDStr + ": " + payload + "(" + frameStr + ")");
   } 

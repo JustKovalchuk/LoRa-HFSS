@@ -8,7 +8,7 @@
 
 struct DeviceInfo {
   String deviceID;
-  byte hmacKey[4];
+  byte hmacKey[32];
   uint32_t lastFrameCounter;
 };
 
