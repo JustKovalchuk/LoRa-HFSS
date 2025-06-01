@@ -7,11 +7,11 @@
 #include <Arduino.h>
 
 struct DeviceInfo {
-  String deviceID;
+  char* deviceID;
   byte hmacKey[32];
   uint32_t lastFrameCounter;
 };
 
-DeviceInfo* findDevice(const String& deviceID, DeviceInfo* trustedDevices, int deviceCount);
+DeviceInfo* findDevice(const char* deviceID, DeviceInfo* trustedDevices, int deviceCount);
 
 #endif

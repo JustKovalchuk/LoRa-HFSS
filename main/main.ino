@@ -3,34 +3,25 @@
 #include "auth.h"
 #include "init.h"
 #include "deviceinfo.h"
+#include "processor.h"
 
 #include <Wire.h>
 #include <RTClib.h>
 
-bool isTx = false;
+bool isTx = true;
 bool isRtcConnected = false;
-DateTime baseRTCTime(2025, 5, 23, 0, 0, 0);
-// bool isDisplayConnected = false;
+DateTime baseRTCTime(2025, 6, 1, 0, 0, 0);
 
 int syncHopIndex = 0;
 unsigned long syncTime = 0;
+bool synced = false;
 
 RTC_DS3231 rtc;
-
-
-
-// #define SCREEN_WIDTH 128 
-// #define SCREEN_HEIGHT 8
-// // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
-// Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-
-
-
-#pragma region RX_VARS
+DeviceInfo myDevice;
 
 DeviceInfo trustedDevices[] = {
   {
-    "NODE_ALPHA", 
+    "ALPHA", 
     {  
       0x7D, 0x3A, 0xB1, 0xE8, 0x4F, 0x90, 0x23, 0x56,
       0x88, 0xC1, 0xA4, 0xF2, 0x6E, 0x9D, 0x37, 0xE3,
@@ -40,7 +31,7 @@ DeviceInfo trustedDevices[] = {
     0
   },
   {
-    "NODE_BRAVO", 
+    "BRAVO", 
     {
       0xC4, 0x1E, 0x28, 0x95, 0xAF, 0x62, 0xDB, 0x33,
       0x17, 0x4A, 0x60, 0xB3, 0x02, 0x8C, 0x7F, 0xD7,
@@ -51,23 +42,19 @@ DeviceInfo trustedDevices[] = {
   },
 };
 
+#pragma region RX_VARS
+
 const int deviceCount = sizeof(trustedDevices) / sizeof(trustedDevices[0]);
-
-
-
-bool synced = false;
 
 int requestPerMinute = 60000 / hopInterval;
 
-const int REPLAY_WINDOW = 5 * requestPerMinute;
+const int REPLAY_WINDOW = 10000;//5 * requestPerMinute;
 
 #pragma endregion
 
 
 
 #pragma region TX_VARS
-
-DeviceInfo myDevice = trustedDevices[0]
 
 unsigned long syncDelay = 100;
 
@@ -91,12 +78,20 @@ bool IsNewHop(){
 }
 
 void setInitHopIndex() {
+  Serial.println("_____________________");
+  Serial.print("Got RTC SYNC.");
   if (isRtcConnected){
     unsigned long timeSinceSync = getRTCTime();
     unsigned long hopsSinceSync = timeSinceSync/hopInterval;
     unsigned long int currentFreqIndex = hopsSinceSync / freqCount;
     lastHopTime = hopsSinceSync*hopInterval;
     hopIndex = hopsSinceSync % freqCount;
+    Serial.print("hopIndex: ");
+    Serial.println(hopIndex);
+    Serial.print("freqCount: ");
+    Serial.println(freqCount);
+    Serial.print("hopsSinceSync: ");
+    Serial.println(hopsSinceSync);
   }
   Serial.println("_____________________");
 }
@@ -168,16 +163,17 @@ void SendSyncPacket(long basicFreq) {
 void setupTx(){
   Serial.begin(9600);
   while (!Serial);
+  delay(1000);
 
   Wire.begin();
   // Try to connect to RTC 10 times
   for (int attempts = 0; attempts < 10; attempts++) {
     if (rtc.begin()) {
       isRtcConnected = true;
-      Serial.println("✅ RTC connected.");
+      Serial.println("RTC connected.");
       break;
     } else {
-      Serial.print("⏳ RTC not responding (attempt ");
+      Serial.print("RTC not responding (attempt ");
       Serial.print(attempts + 1);
       Serial.println("/10)");
       delay(300);
@@ -185,7 +181,7 @@ void setupTx(){
   }
 
   if (!isRtcConnected) {
-    Serial.println("⚠️ RTC not found. Continuing without RTC.");
+    Serial.println("RTC not found. Continuing without RTC.");
   }
 
   LoRa.setPins(10, 9, 2); // NSS, RESET, DIO0
@@ -193,6 +189,11 @@ void setupTx(){
     Serial.println("Starting LoRa failed!");
     while (1);
   }
+  // LoRa.setSpreadingFactor(9);     // Або те, що вам потрібно
+  // LoRa.setSignalBandwidth(100E3); // Стандарт
+  // LoRa.setCodingRate4(5);         // Покращення надійності
+  // LoRa.setSyncWord(0x34); 
+
   Serial.println("Transmitter ready");
 }
 void loopTx() {
@@ -217,17 +218,6 @@ void loopTx() {
       SendSyncPacket(currentFreq);
       delay(syncDelay);
     }
-    
-    String payload = "MSG: Hello on " + String(currentFreq);
-    String fullPacket = getSecureMessage(payload, myDevice.deviceID, frameCounter, myDevice.hmacKey, sizeof(myDevice.hmacKey));
-    
-    LoRa.beginPacket();
-    LoRa.print(fullPacket);
-    LoRa.endPacket();
-
-    Serial.println("Sent: " + fullPacket);
-
-    frameCounter++;
     Serial.print("RTC unixTime: ");
     Serial.println(getRTCTime());
 
@@ -237,6 +227,21 @@ void loopTx() {
     Serial.println("-----------------------------");
   }
 
+  long currentFreq = getCurrentFreq(hopIndex);
+  char payload[64];
+  snprintf(payload, sizeof(payload), "MSG:FREQ:%lu:end", currentFreq);
+  char packet[140];
+  getSecureMessage(payload, myDevice.deviceID, frameCounter, myDevice.hmacKey, sizeof(myDevice.hmacKey), packet, sizeof(packet));
+  
+  LoRa.beginPacket();
+  LoRa.print(packet);
+  LoRa.endPacket();
+  delay(1000);
+
+  Serial.print("Sent: ");
+  Serial.println(packet);
+
+  frameCounter++;
   delay(50);
 }
 
@@ -246,29 +251,45 @@ void loopTx() {
 
 #pragma region RX
 
-void processPacket(String packet) {
-  int pos1 = packet.indexOf('|');
-  int pos2 = packet.indexOf('|', pos1 + 1);
-  int pos3 = packet.indexOf('|', pos2 + 1);
-
-  if (pos1 == -1 || pos2 == -1 || pos3 == -1) {
-    Serial.println("❌ Invalid format");
-    return;
+void processPacket(char* packet) {
+  char* pos1 = strchr(packet, '|');
+  if (!pos1) { 
+    Serial.println("Invalid format"); 
+    return; 
+  }
+  *pos1 = '\0';
+  char* pos2 = strchr(pos1 + 1, '|');
+  if (!pos2) { 
+    Serial.println("Invalid format"); 
+    return; 
+  }
+  *pos2 = '\0';
+  char* pos3 = strchr(pos2 + 1, '|');
+  if (!pos3) { 
+    Serial.println("Invalid format"); 
+    return; 
   }
 
-  String deviceIDStr = packet.substring(0, pos1);
-  String frameStr = packet.substring(pos1 + 1, pos2);
-  String payload = packet.substring(pos2 + 1, pos3);
-  String receivedHMAC = packet.substring(pos3 + 1);
+  *pos3 = '\0';
+
+  char* deviceIDStr = packet;
+  char* frameStr = pos1 + 1;
+  char* payload = pos2 + 1;
+  char* receivedHMAC = pos3 + 1;
 
   DeviceInfo* device = findDevice(deviceIDStr, trustedDevices, deviceCount);
   if (device == nullptr) {
-    Serial.println("🚫 Unknown device ID: " + deviceIDStr);
+    Serial.print("Unknown device ID: ");
+    Serial.println(deviceIDStr);
     return;
   }
 
-  int32_t receivedFrameCounter = frameStr.toInt();
-  Serial.println("receivedFrameCounter: " + String(receivedFrameCounter) + "; lastFrameCounter: " + String(device->lastFrameCounter));
+  int32_t receivedFrameCounter = atoi(frameStr);
+  Serial.print(F("receivedFrameCounter: "));
+  Serial.print(receivedFrameCounter);
+  Serial.print(F("; lastFrameCounter: "));
+  Serial.println(device->lastFrameCounter);
+
   // Перевірка на повтор
   if (receivedFrameCounter <= device->lastFrameCounter) {
     Serial.println("⚠️ Replay attempt — frame too old");
@@ -280,27 +301,28 @@ void processPacket(String packet) {
     return;
   }
 
-  String base = deviceIDStr + "|" + frameStr + "|" + payload;
+  char base[128];
+  snprintf(base, sizeof(base), "%s|%s|%s", deviceIDStr, frameStr, payload);
 
-  if (verifyHMAC(base, device->hmacKey, sizeof(device->hmacKey), receivedHMAC)) {
+ if (verifyHMAC(base, device->hmacKey, sizeof(device->hmacKey), receivedHMAC)) {
     device->lastFrameCounter = receivedFrameCounter;
-    Serial.println("✅ Accepted from " + deviceIDStr + ": " + payload + "(" + frameStr + ")");
-    // if (isDisplayConnected) {
-    //   display.clearDisplay();
-    //   display.setCursor(0, 0);
-
-    //   display.println(deviceIDStr + ": " + payload + "(" + frameStr + ")");
-    //   display.display(); 
-    // }
+    Serial.print(F("✅ Accepted from "));
+    Serial.print(deviceIDStr);
+    Serial.print(F(": "));
+    Serial.print(payload);
+    Serial.print(F(" ("));
+    Serial.print(frameStr);
+    Serial.println(F(")"));
   } 
   else {
-    Serial.println("❌ Invalid HMAC — possibly spoofed");
+    Serial.println(F("❌ Invalid HMAC — possibly spoofed"));
   }
 }
 
 void setupRx() {
   Serial.begin(115200);
   while (!Serial);
+  delay(1000);
   
   Wire.begin();
   // Try to connect to RTC 10 times
@@ -321,32 +343,18 @@ void setupRx() {
     Serial.println("⚠️ RTC not found. Continuing without RTC.");
   }
 
-  // if (isDisplayConnected) {
-  //   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
-  //     Serial.println(F("SSD1306 allocation failed"));
-  //     for(;;);
-  //   }
-  // }
-
   LoRa.setPins(10, 9, 2); // NSS, RESET, DIO0
   if (!LoRa.begin(SYNC_FREQ)) {
     Serial.println("Starting LoRa failed!");
     while (1);
   }
-
+  // LoRa.setSpreadingFactor(9);     // Або те, що вам потрібно
+  // LoRa.setSignalBandwidth(125E3); // Стандарт
+  // LoRa.setCodingRate4(5);         // Покращення надійності
+  // LoRa.setSyncWord(0x34); 
 
   String printString = "Receiver ready, waiting for SYNC...";
   Serial.println(printString);
-
-  // if (isDisplayConnected) {
-  //   display.clearDisplay();
-  //   display.setTextSize(1);
-  //   display.setTextColor(WHITE);
-  //   display.setCursor(0, 0);
-
-  //   display.println(printString);
-  //   display.display(); 
-  // }
 }
 void loopRx() {
   int packetSize;
@@ -355,8 +363,6 @@ void loopRx() {
   if (!synced) {
     if (isRtcConnected) {
       setInitHopIndex();
-      Serial.print("Got RTC SYNC. Index: ");
-      Serial.println(hopIndex);
       synced = true;
       long currentFreq = getCurrentFreq(hopIndex);
       LoRa.setFrequency(currentFreq);
@@ -373,7 +379,7 @@ void loopRx() {
           syncTime = millis();
           syncHopIndex = message.substring(5).toInt();
           hopIndex = syncHopIndex;
-          Serial.print("Got SYNC. Index: ");
+          Serial.print("Got Not RTC SYNC. Index: ");
           Serial.println(hopIndex);
           synced = true;
           long currentFreq = getCurrentFreq(hopIndex);
@@ -384,7 +390,6 @@ void loopRx() {
     }
     return;
   }
-  
   // Отримання даних на синхронізованій частоті
   packetSize = LoRa.parsePacket();
   if (packetSize) {
@@ -392,11 +397,13 @@ void loopRx() {
     while (LoRa.available()) {
       message += (char)LoRa.read();
     }
+    char buffer[128];
+    Serial.print(F("Received: "));
+    Serial.println(message);
+    message.toCharArray(buffer, sizeof(buffer));
 
-    processPacket(message);
-
-    // Serial.print("Received: ");
-    // Serial.println(message);
+    processPacket(buffer);
+    Serial.println(F("Exited processPacket"));
   }
 
   // Перехід на нову частоту
@@ -423,10 +430,28 @@ void loopRx() {
 
 void setup(){
   if (isTx){
+    myDevice = trustedDevices[0];
     setupTx();
+    Serial.print("Initialized with device: ");
+    Serial.println(myDevice.deviceID);
+    Serial.print("HMAC key: ");
+    for (int i = 0; i < 32; i++) {
+      if (myDevice.hmacKey[i] < 0x10) Serial.print("0");
+      Serial.print(myDevice.hmacKey[i], HEX);
+    }
+    Serial.println();
   }
   else {
+    myDevice = trustedDevices[1];
     setupRx();
+    Serial.print("Initialized with device: ");
+    Serial.println(myDevice.deviceID);
+    Serial.print("HMAC key: ");
+    for (int i = 0; i < 32; i++) {
+      if (myDevice.hmacKey[i] < 0x10) Serial.print("0");
+      Serial.print(myDevice.hmacKey[i], HEX);
+    }
+    Serial.println();
   }
 }
 

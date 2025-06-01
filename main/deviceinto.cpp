@@ -1,9 +1,9 @@
 
 #include "deviceinfo.h"
 
-DeviceInfo* findDevice(const String& deviceID, DeviceInfo* trustedDevices, int deviceCount) {
+DeviceInfo* findDevice(const char* deviceID, DeviceInfo* trustedDevices, int deviceCount) {
   for (int i = 0; i < deviceCount; i++) {
-    if (trustedDevices[i].deviceID == deviceID) {
+    if (strcmp(trustedDevices[i].deviceID, deviceID) == 0) {
       return &trustedDevices[i];
     }
   }

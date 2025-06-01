@@ -27,6 +27,7 @@ void setup() {
     while (1);
   }
 
+  CalibrateTime();
   // if (rtc.lostPower()) {
   //   Serial.println("RTC lost power");
   //   // Встановлення поточного часу при першому запуску
@@ -55,6 +56,7 @@ void setup() {
   display.println("display init...");
   display.display(); 
   delay(1000);
+
 }
 
 void loop() {
