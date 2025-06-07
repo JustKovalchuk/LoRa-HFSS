@@ -14,8 +14,9 @@ from PyQt5 import QtCore
 from gnuradio import analog
 from gnuradio import blocks
 import pmt
-from gnuradio import gr
+from gnuradio import filter
 from gnuradio.filter import firdes
+from gnuradio import gr
 from gnuradio.fft import window
 import sys
 import signal
@@ -65,18 +66,53 @@ class my_fhss(gr.top_block, Qt.QWidget):
         ##################################################
         # Variables
         ##################################################
-        self.samp_rate = samp_rate = 4000000
+        self.samp_rate = samp_rate = 3000000
         self.freq = freq = 868e6
 
         ##################################################
         # Blocks
         ##################################################
 
+        self.throttle = blocks.throttle(gr.sizeof_gr_complex*1, samp_rate,True)
         self._freq_range = qtgui.Range(863e6, 870e6, 100e3, 868e6, 200)
         self._freq_win = qtgui.RangeWidget(self._freq_range, self.set_freq, "freq", "counter_slider", float, QtCore.Qt.Horizontal)
         self.top_layout.addWidget(self._freq_win)
-        self.throttle = blocks.throttle(gr.sizeof_gr_complex*1, samp_rate,True)
         self.sawtooth = analog.sig_source_f(samp_rate, analog.GR_SAW_WAVE, 1, 1, 0.0, 0.0)
+        self.qtgui_waterfall_sink_x_2 = qtgui.waterfall_sink_c(
+            1024, #size
+            window.WIN_BLACKMAN_hARRIS, #wintype
+            868e6, #fc
+            samp_rate, #bw
+            "FHSS+Noise", #name
+            1, #number of inputs
+            None # parent
+        )
+        self.qtgui_waterfall_sink_x_2.set_update_time(0.10)
+        self.qtgui_waterfall_sink_x_2.enable_grid(False)
+        self.qtgui_waterfall_sink_x_2.enable_axis_labels(True)
+
+
+
+        labels = ['', '', '', '', '',
+                  '', '', '', '', '']
+        colors = [0, 0, 0, 0, 0,
+                  0, 0, 0, 0, 0]
+        alphas = [1.0, 1.0, 1.0, 1.0, 1.0,
+                  1.0, 1.0, 1.0, 1.0, 1.0]
+
+        for i in range(1):
+            if len(labels[i]) == 0:
+                self.qtgui_waterfall_sink_x_2.set_line_label(i, "Data {0}".format(i))
+            else:
+                self.qtgui_waterfall_sink_x_2.set_line_label(i, labels[i])
+            self.qtgui_waterfall_sink_x_2.set_color_map(i, colors[i])
+            self.qtgui_waterfall_sink_x_2.set_line_alpha(i, alphas[i])
+
+        self.qtgui_waterfall_sink_x_2.set_intensity_range(-140, 10)
+
+        self._qtgui_waterfall_sink_x_2_win = sip.wrapinstance(self.qtgui_waterfall_sink_x_2.qwidget(), Qt.QWidget)
+
+        self.top_layout.addWidget(self._qtgui_waterfall_sink_x_2_win)
         self.qtgui_waterfall_sink_x_1 = qtgui.waterfall_sink_c(
             1024, #size
             window.WIN_BLACKMAN_hARRIS, #wintype
@@ -113,9 +149,22 @@ class my_fhss(gr.top_block, Qt.QWidget):
 
         self.top_layout.addWidget(self._qtgui_waterfall_sink_x_1_win)
         self.modulator = analog.frequency_modulator_fc((2 * 3.1416 * 125000 / samp_rate))
+        self.low_pass_filter_0 = filter.fir_filter_ccf(
+            1,
+            firdes.low_pass(
+                1,
+                samp_rate,
+                125e3,
+                1000,
+                window.WIN_HAMMING,
+                6.76))
         self.epy_block_0 = epy_block_0.blk(freq=868000000)
+        self.blocks_throttle_0 = blocks.throttle(gr.sizeof_gr_complex*1, samp_rate,True)
+        self.blocks_null_sink_0 = blocks.null_sink(gr.sizeof_gr_complex*1)
         self.blocks_message_strobe_0 = blocks.message_strobe(pmt.intern("tick"), 1000)
+        self.blocks_add_xx_0 = blocks.add_vcc(1)
         self.analog_sig_source_x_0 = analog.sig_source_c(samp_rate, analog.GR_COS_WAVE, 1, 1, 0, 0)
+        self.analog_noise_source_x_0 = analog.noise_source_c(analog.GR_GAUSSIAN, 2, 0)
 
 
         ##################################################
@@ -123,7 +172,13 @@ class my_fhss(gr.top_block, Qt.QWidget):
         ##################################################
         self.msg_connect((self.blocks_message_strobe_0, 'strobe'), (self.epy_block_0, 'tick'))
         self.msg_connect((self.epy_block_0, 'msg'), (self.analog_sig_source_x_0, 'cmd'))
+        self.connect((self.analog_noise_source_x_0, 0), (self.blocks_throttle_0, 0))
+        self.connect((self.analog_sig_source_x_0, 0), (self.blocks_add_xx_0, 0))
+        self.connect((self.analog_sig_source_x_0, 0), (self.blocks_null_sink_0, 0))
         self.connect((self.analog_sig_source_x_0, 0), (self.qtgui_waterfall_sink_x_1, 0))
+        self.connect((self.blocks_add_xx_0, 0), (self.qtgui_waterfall_sink_x_2, 0))
+        self.connect((self.blocks_throttle_0, 0), (self.low_pass_filter_0, 0))
+        self.connect((self.low_pass_filter_0, 0), (self.blocks_add_xx_0, 1))
         self.connect((self.modulator, 0), (self.throttle, 0))
         self.connect((self.sawtooth, 0), (self.modulator, 0))
 
@@ -142,8 +197,11 @@ class my_fhss(gr.top_block, Qt.QWidget):
     def set_samp_rate(self, samp_rate):
         self.samp_rate = samp_rate
         self.analog_sig_source_x_0.set_sampling_freq(self.samp_rate)
+        self.blocks_throttle_0.set_sample_rate(self.samp_rate)
+        self.low_pass_filter_0.set_taps(firdes.low_pass(1, self.samp_rate, 125e3, 1000, window.WIN_HAMMING, 6.76))
         self.modulator.set_sensitivity((2 * 3.1416 * 125000 / self.samp_rate))
         self.qtgui_waterfall_sink_x_1.set_frequency_range(868e6, self.samp_rate)
+        self.qtgui_waterfall_sink_x_2.set_frequency_range(868e6, self.samp_rate)
         self.sawtooth.set_sampling_freq(self.samp_rate)
         self.throttle.set_sample_rate(self.samp_rate)
 
